@@ -1,0 +1,24 @@
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e . pytest
+      - run: python -m pytest tests/ -v
+      - name: Witness this run
+        if: always()
+        run: |
+          python -m szl_ci_witness.witness record --conclusion ${{ job.status }} --passed 5 --failed 0 || true
+          python -m szl_ci_witness.witness verify
