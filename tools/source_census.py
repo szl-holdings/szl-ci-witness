@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tarfile
 import tempfile
 import time
@@ -106,6 +107,61 @@ def fetch(url: str, *, token: str | None = None, cap: int = MAX_JSON) -> bytes:
                 raise CensusError('transport unavailable') from None
             time.sleep(2 ** attempt)
     raise CensusError('fetch attempts exhausted')
+
+
+def archive_to_file(url: str, destination: Path, cap: int) -> int:
+    """Stream a pinned public archive within an explicit budget; never use auth."""
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != 'https' or parsed.hostname != 'codeload.github.com'
+            or parsed.username or parsed.password or parsed.port not in (None, 443)):
+        raise CensusError('archive destination is not allowlisted')
+    request = urllib.request.Request(url, headers={'User-Agent': 'SZL-Source-Census/1'})
+    opener = urllib.request.build_opener(NoRedirect())
+    count = 0
+    created = False
+    try:
+        with destination.open('xb') as out:
+            created = True
+            with opener.open(request, timeout=40) as response:
+                declared = response.headers.get('Content-Length')
+                if declared and int(declared) > cap:
+                    raise CensusError('archive response byte budget exceeded')
+                while True:
+                    block = response.read(min(1024 * 1024, cap - count + 1))
+                    if not block:
+                        break
+                    count += len(block)
+                    if count > cap:
+                        raise CensusError('archive response byte budget exceeded')
+                    out.write(block)
+        return count
+    except Exception:
+        if created and destination.exists():
+            destination.unlink()
+        raise
+
+
+def source_checks(repo: str, revision: str, token: str | None) -> dict:
+    """Observe all latest check contexts for this exact revision, never infer readiness."""
+    checks = []
+    for page in range(1, 11):
+        data = api(f'/repos/{repo}/commits/{sha40(revision)}/check-runs?filter=latest&per_page=100&page={page}', token)
+        rows = data.get('check_runs')
+        if not isinstance(rows, list) or not isinstance(data.get('total_count'), int):
+            raise CensusError('malformed check inventory')
+        checks.extend(rows)
+        if len(checks) >= data['total_count']:
+            break
+    else:
+        raise CensusError('check pagination limit reached')
+    return {
+        'scope': 'LATEST_CHECK_CONTEXTS_AT_PINNED_COMMIT',
+        'observed_at': utc(), 'count': len(checks),
+        'counts': dict(Counter(c.get('conclusion') or c.get('status') for c in checks)),
+        'checks': [{k: c.get(k) for k in ('id', 'name', 'status', 'conclusion', 'html_url')} for c in checks],
+        'required_status_or_review_policy': 'NOT_EVALUATED',
+        'runtime_acceptance': 'NOT_CLAIMED',
+    }
 
 
 def api(path: str, token: str | None) -> Any:
@@ -272,7 +328,7 @@ def scan_archive(archive: Path, entries: list[dict]) -> tuple[list[dict], list[s
     return sorted(records.values(), key=lambda r: r['path']), sorted(set(errors))
 
 
-def audit_repo(repo: dict, output: Path, token: str | None, retain: bool) -> dict:
+def audit_repo(repo: dict, output: Path, token: str | None, retain: bool, archive_cap: int = MAX_ARCHIVE, with_ci: bool = False) -> dict:
     name, full = repo['name'], repo['full_name']
     result = {'repository': full, 'archived': repo['archived'], 'observed_at': utc(), 'status': 'INCOMPLETE'}
     try:
@@ -284,7 +340,7 @@ def audit_repo(repo: dict, output: Path, token: str | None, retain: bool) -> dic
         result['tracked_blobs'] = sum(e['type'] == 'blob' for e in entries)
         with tempfile.TemporaryDirectory() as temp:
             archive = Path(temp) / 'source.tar.gz'
-            archive.write_bytes(fetch(f'https://codeload.github.com/{full}/tar.gz/{revision}', cap=MAX_ARCHIVE))
+            result['archive_bytes'] = archive_to_file(f'https://codeload.github.com/{full}/tar.gz/{revision}', archive, archive_cap)
             records, errors = scan_archive(archive, entries)
             if retain and name in RETAIN:
                 dest = output / 'review-archives'
@@ -297,6 +353,11 @@ def audit_repo(repo: dict, output: Path, token: str | None, retain: bool) -> dic
         result['python_parse_candidates'] = [{'path': r['path'], 'line': r.get('parse_line')} for r in records if r.get('python_parse') == 'REVIEW_REQUIRED_NOT_RUNTIME_PROOF']
         result['unpinned_action_references'] = sum(len(r.get('action_refs_not_commit_pinned', [])) for r in records)
         result['technologies_by_category'] = {kind: dict(Counter(t for r in records if r['category'] == kind for t in r.get('technology_mentions', []))) for kind in ('source', 'test', 'workflow', 'build', 'documentation')}
+        if with_ci:
+            try:
+                result['ci'] = source_checks(full, revision, token)
+            except Exception as exc:
+                result['ci'] = {'scope': 'INCOMPLETE', 'error_type': type(exc).__name__}
         result['tip_after_scan'] = sha40(api(f'/repos/{full}/commits/{ref}', token)['sha'])
         result['tip_moved'] = result['tip_after_scan'] != revision
     except Exception as exc:
@@ -314,16 +375,18 @@ def main() -> int:
     parser.add_argument('--workers', type=int, default=3, choices=range(1, 5))
     parser.add_argument('--max-repos', type=int, default=200)
     parser.add_argument('--retain-review-archives', action='store_true')
+    parser.add_argument('--archive-mib', type=int, default=192, choices=(192, 384, 768))
+    parser.add_argument('--with-ci', action='store_true')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     token = os.getenv('GH_TOKEN')
-    report: dict[str, Any] = {'schema': 'szl.source-census/v1', 'started_at': utc(), 'organization': args.org, 'scope': 'PUBLIC_DEFAULT_BRANCH_SNAPSHOTS_INCLUDING_ARCHIVED', 'manual_file_review': False, 'runtime_certification': False, 'private_repository_coverage': 'NOT_COLLECTED', 'repositories': []}
+    report: dict[str, Any] = {'schema': 'szl.source-census/v1', 'started_at': utc(), 'organization': args.org, 'scope': 'PUBLIC_DEFAULT_BRANCH_SNAPSHOTS_INCLUDING_ARCHIVED', 'manual_file_review': False, 'runtime_certification': False, 'private_repository_coverage': 'NOT_COLLECTED', 'repositories': [], 'auditor_python': sys.version.split()[0], 'collector_source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'archive_cap_bytes': args.archive_mib * 1024 * 1024}
     try:
         repos = inventory(args.org, token)
         if not repos or len(repos) > args.max_repos:
             raise CensusError('repository count is outside explicit budget')
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = [pool.submit(audit_repo, repo, args.output, token, args.retain_review_archives) for repo in repos]
+            futures = [pool.submit(audit_repo, repo, args.output, token, args.retain_review_archives, args.archive_mib * 1024 * 1024, args.with_ci) for repo in repos]
             for future in concurrent.futures.as_completed(futures):
                 row = future.result()
                 report['repositories'].append(row)
