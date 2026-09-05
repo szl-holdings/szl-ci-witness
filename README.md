@@ -18,7 +18,9 @@ are recorded as well as successes.
 Use the SHA-pinned, complete pattern in `.github/workflows/tests.yml`.
 It grants only `contents: read` and `actions: read`, serializes runs per
 workflow/ref, separates Python-version streams, and retains artifacts for
-90 days. Consumer repositories must pin this package to an exact reviewed
+90 days. `queue: max` retains up to 100 pending runs rather than replacing
+the single pending run under the default concurrency behavior. Consumer
+repositories must pin this package to an exact reviewed
 commit. Pull requests and tag dispatches run tests but do not publish
 trusted branch history.
 
@@ -68,6 +70,12 @@ from that chain alone. Archive a trusted terminal hash and the full chain
 outside this repository for independent continuity assurance. Receipts are
 explicitly `UNSIGNED_HONEST`; GitHub origin checks do not turn them into
 cryptographic signatures or proof of production runtime health.
+
+The chain covers runs which reached the witness step. Manual cancellation,
+setup failures, and queue overflow beyond GitHub's 100-pending-run limit may
+leave runs without receipts. Do not use chain length as proof that every
+trigger or source revision was witnessed. See the official
+[GitHub concurrency contract](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax).
 
 ## Doctrine
 
