@@ -5,6 +5,7 @@ on:
     paths:
       - tools/source_census.py
       - tests/test_source_census.py
+      - tests/test_census_streaming.py
       - .github/workflows/source-census.yml
       - docs/SOURCE_CENSUS.md
   push:
@@ -12,6 +13,7 @@ on:
     paths:
       - tools/source_census.py
       - tests/test_source_census.py
+      - tests/test_census_streaming.py
       - .github/workflows/source-census.yml
   workflow_dispatch:
 
@@ -38,7 +40,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
-      - run: python -S -m unittest discover -s tests -p test_source_census.py -v
+      - run: python -S -m unittest discover -s tests -p 'test*census*.py' -v
       - run: python -S -m py_compile tools/source_census.py
 
   census:
@@ -57,10 +59,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
+      # platform's observed Git tree contains 393,188,837 bytes, including video
+      # and archived launch bundles. Stream it; do not omit its 9,629 blobs.
       - name: Collect bounded exact-revision public source evidence
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python -S tools/source_census.py --org szl-holdings --output audit-out --workers 3 --max-repos 200 --retain-review-archives
+        run: python -S tools/source_census.py --org szl-holdings --output audit-out --workers 3 --max-repos 200 --archive-mib 384 --with-ci --retain-review-archives
       - name: Retain observed coverage including explicit failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
