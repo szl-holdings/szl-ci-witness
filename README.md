@@ -19,7 +19,8 @@ Use the SHA-pinned, complete pattern in `.github/workflows/tests.yml`.
 It grants only `contents: read` and `actions: read`, serializes runs per
 workflow/ref, separates Python-version streams, and retains artifacts for
 90 days. Consumer repositories must pin this package to an exact reviewed
-commit. Pull requests run tests but do not publish trusted branch history.
+commit. Pull requests and tag dispatches run tests but do not publish
+trusted branch history.
 
 For each non-PR run:
 
