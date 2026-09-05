@@ -3,9 +3,15 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: ci-witness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   pytest:
@@ -13,15 +19,40 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
+      fail-fast: false
+    env:
+      WITNESS_STREAM: ${{ github.workflow }}:${{ github.ref }}:python-${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e . pytest
-      - run: python -m pytest tests/ -v
+      - name: Restore and verify predecessor
+        if: github.event_name != 'pull_request'
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m szl_ci_witness.github_artifacts
+      - name: Test
+        id: test
+        run: python -m pytest tests/ -v --junitxml=test-results.xml
       - name: Witness this run
-        if: always()
+        if: always() && steps.restore.outcome == 'success'
+        id: witness
+        env:
+          TEST_CONCLUSION: ${{ steps.test.outcome }}
         run: |
-          python -m szl_ci_witness.witness record --conclusion ${{ job.status }} --passed 5 --failed 0 || true
+          python -m szl_ci_witness.witness record-junit --conclusion "$TEST_CONCLUSION"
           python -m szl_ci_witness.witness verify
+          python -m szl_ci_witness.witness summary
+      - name: Persist witness and test report
+        if: always() && steps.witness.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.restore.outputs.artifact_name }}
+          path: |
+            ci-witness.jsonl
+            test-results.xml
+          if-no-files-found: error
+          retention-days: 90
