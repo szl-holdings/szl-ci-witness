@@ -1,0 +1,72 @@
+name: Exact-revision public source census
+
+on:
+  pull_request:
+    paths:
+      - tools/source_census.py
+      - tests/test_source_census.py
+      - .github/workflows/source-census.yml
+      - docs/SOURCE_CENSUS.md
+  push:
+    branches: [main]
+    paths:
+      - tools/source_census.py
+      - tests/test_source_census.py
+      - .github/workflows/source-census.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-census-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    name: Census offline contracts (${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -S -m unittest discover -s tests -p test_source_census.py -v
+      - run: python -S -m py_compile tools/source_census.py
+
+  census:
+    name: Public file coverage, not runtime certification
+    needs: contracts
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Collect bounded exact-revision public source evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -S tools/source_census.py --org szl-holdings --output audit-out --workers 3 --max-repos 200 --retain-review-archives
+      - name: Retain observed coverage including explicit failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-census-${{ github.run_id }}-${{ github.run_attempt }}
+          path: audit-out/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
