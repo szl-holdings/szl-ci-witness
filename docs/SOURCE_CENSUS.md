@@ -9,11 +9,11 @@ python -S -m unittest discover -s tests -p 'test*census*.py' -v
 python -S tools/source_census.py --org szl-holdings --output audit-out --workers 3 --max-repos 200 --archive-mib 384 --with-ci
 ```
 
-There are 30 offline regression tests. `GH_TOKEN` is optional for public API rate limits. In the hosted workflow it is the ordinary repository-scoped, contents-read-only GitHub token, not an organization secret. Tokens are sent only to `api.github.com`; redirects are rejected. Source archives stream without credentials from `codeload.github.com`. The workflow performs no remote mutation, production restart, model execution, training, or package installation from audited repositories.
+Offline regression tests cover archive integrity, source parsing, pagination, credential boundaries, inventory drift, and explicit coverage exclusions. `GH_TOKEN` is optional for public API rate limits. In the hosted workflow it is the ordinary repository-scoped, contents-read-only GitHub token, not an organization secret. Tokens are sent only to `api.github.com`; redirects are rejected. Source archives stream without credentials from `codeload.github.com`. The workflow performs no remote mutation, production restart, model execution, training, or package installation from audited repositories.
 
 ## What is measured
 
-- Public repository pagination, including archived repositories, with a second inventory observation after collection.
+- Public repository pagination, including archived repositories, with a second inventory observation after collection. Completion requires stable repository identity, canonical name, default branch, and archived state; incidental timestamp changes do not invalidate the snapshot.
 - Exact default-branch commit for each repository; Git tree enumeration with an explicit fallback if the recursive tree is truncated.
 - Every tracked regular blob present in the archive is read and verified against its Git blob SHA; a SHA-256 content commitment is retained too.
 - Small UTF-8 files are statically inspected. Python AST parsing does not execute modules. A parse error is a review candidate for the auditor's Python version, not a confirmed production defect.
