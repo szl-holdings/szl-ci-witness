@@ -191,6 +191,14 @@ def inventory(org: str, token: str | None) -> list[dict]:
     raise CensusError('inventory pagination limit reached')
 
 
+def inventory_identity(repositories: list[dict]) -> list[tuple[Any, Any, Any, Any]]:
+    """Stable semantic inventory fields that must not drift across a census."""
+    return [
+        (repo.get('id'), repo.get('full_name'), repo.get('default_branch'), repo.get('archived'))
+        for repo in repositories
+    ]
+
+
 def tree_entries(repo: str, revision: str, token: str | None) -> list[dict]:
     data = api(f'/repos/{repo}/git/trees/{sha40(revision)}?recursive=1', token)
     if data.get('truncated') is False:
@@ -383,6 +391,7 @@ def main() -> int:
     report: dict[str, Any] = {'schema': 'szl.source-census/v1', 'started_at': utc(), 'organization': args.org, 'scope': 'PUBLIC_DEFAULT_BRANCH_SNAPSHOTS_INCLUDING_ARCHIVED', 'manual_file_review': False, 'runtime_certification': False, 'private_repository_coverage': 'NOT_COLLECTED', 'repositories': [], 'auditor_python': sys.version.split()[0], 'collector_source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'archive_cap_bytes': args.archive_mib * 1024 * 1024}
     try:
         repos = inventory(args.org, token)
+        initial_inventory = inventory_identity(repos)
         if not repos or len(repos) > args.max_repos:
             raise CensusError('repository count is outside explicit budget')
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -392,7 +401,7 @@ def main() -> int:
                 report['repositories'].append(row)
                 print(json.dumps({k: row[k] for k in ('repository', 'revision', 'status', 'tracked_blobs', 'verified_blobs', 'error_type') if k in row}), flush=True)
         report['repositories'].sort(key=lambda r: r['repository'].lower())
-        report['inventory_unchanged_at_end'] = [r['id'] for r in repos] == [r['id'] for r in inventory(args.org, token)]
+        report['inventory_unchanged_at_end'] = initial_inventory == inventory_identity(inventory(args.org, token))
         report['complete'] = report['inventory_unchanged_at_end'] and all(r['status'] == 'COMPLETE_AT_REVISION' for r in report['repositories'])
     except Exception as exc:
         report.update(complete=False, fatal_type=type(exc).__name__)
