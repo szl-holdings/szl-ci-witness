@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
+import binascii
 import concurrent.futures
 import hashlib
 import json
@@ -24,7 +26,7 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -168,6 +170,25 @@ def api(path: str, token: str | None) -> Any:
     return json.loads(fetch('https://api.github.com' + path, token=token))
 
 
+def git_blob_bytes(repo: str, blob_sha: str, token: str | None, cap: int = MAX_TEXT) -> bytes:
+    """Read canonical Git-object bytes for a small blob and verify its object identity."""
+    data = api(f'/repos/{repo}/git/blobs/{sha40(blob_sha)}', token)
+    if data.get('sha') != blob_sha or data.get('encoding') != 'base64':
+        raise CensusError('malformed canonical blob response')
+    size = data.get('size')
+    encoded = data.get('content')
+    if type(size) is not int or size < 0 or size > cap or not isinstance(encoded, str):
+        raise CensusError('canonical blob exceeds fallback boundary')
+    try:
+        body = base64.b64decode(''.join(encoded.split()), validate=True)
+    except (binascii.Error, ValueError):
+        raise CensusError('canonical blob is not valid base64') from None
+    calculated = hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest()
+    if len(body) != size or calculated != blob_sha:
+        raise CensusError('canonical blob identity mismatch')
+    return body
+
+
 def inventory(org: str, token: str | None) -> list[dict]:
     if not NAME.fullmatch(org):
         raise CensusError('invalid organization')
@@ -191,6 +212,14 @@ def inventory(org: str, token: str | None) -> list[dict]:
     raise CensusError('inventory pagination limit reached')
 
 
+def inventory_identity(repositories: list[dict]) -> list[tuple[Any, Any, Any, Any]]:
+    """Stable semantic inventory fields that must not drift across a census."""
+    return [
+        (repo.get('id'), repo.get('full_name'), repo.get('default_branch'), repo.get('archived'))
+        for repo in repositories
+    ]
+
+
 def tree_entries(repo: str, revision: str, token: str | None) -> list[dict]:
     data = api(f'/repos/{repo}/git/trees/{sha40(revision)}?recursive=1', token)
     if data.get('truncated') is False:
@@ -209,7 +238,7 @@ def tree_entries(repo: str, revision: str, token: str | None) -> list[dict]:
                 item = dict(node, path=prefix + node['path'])
                 entries.append(item)
                 if node['type'] == 'tree':
-                    queue.append((item['path'] + '/', node['sha']))
+                    queue.append((item['path'] + '/', item['sha']))
     seen = set()
     for entry in entries:
         path = safe_path(entry['path'])
@@ -262,7 +291,7 @@ def inspect_text(path: str, body: bytes) -> dict:
     return result
 
 
-def scan_archive(archive: Path, entries: list[dict]) -> tuple[list[dict], list[str]]:
+def scan_archive(archive: Path, entries: list[dict], canonical_loader: Callable[[str], bytes] | None = None) -> tuple[list[dict], list[str]]:
     expected = {e['path']: e for e in entries if e['type'] != 'tree'}
     records = {path: {'path': path, 'mode': e['mode'], 'git_blob': e['sha'], 'bytes_declared': e.get('size'), 'category': category(path), 'analysis': 'METADATA_ONLY', 'content_verified': False} for path, e in expected.items()}
     errors, seen, expanded, root = [], set(), 0, None
@@ -315,9 +344,33 @@ def scan_archive(archive: Path, entries: list[dict]) -> tuple[list[dict], list[s
                     small.extend(block)
             verified = count == member.size and hgit.hexdigest() == expected[path]['sha']
             record.update(bytes_read=count, sha256=h256.hexdigest(), content_verified=verified)
+            analysis_body = bytes(small) if member.size <= MAX_TEXT else None
+            if not verified and canonical_loader is not None and expected[path].get('size', MAX_TEXT + 1) <= MAX_TEXT:
+                try:
+                    canonical = canonical_loader(expected[path]['sha'])
+                except Exception as exc:
+                    record['canonical_fallback_error'] = type(exc).__name__
+                else:
+                    canonical_git = hashlib.sha1(b'blob ' + str(len(canonical)).encode() + b'\0' + canonical).hexdigest()
+                    if canonical_git == expected[path]['sha']:
+                        record.update(
+                            archive_export_transformed=True,
+                            archive_sha256=h256.hexdigest(),
+                            canonical_bytes_read=len(canonical),
+                            bytes_read=count + len(canonical),
+                            sha256=hashlib.sha256(canonical).hexdigest(),
+                            content_verified=True,
+                        )
+                        verified = True
+                        analysis_body = canonical if len(canonical) <= MAX_TEXT else None
+                    else:
+                        record['canonical_fallback_error'] = 'GitObjectMismatch'
             if not verified:
                 errors.append('archive content differs from Git blob: ' + path)
-            record.update(inspect_text(path, bytes(small)) if member.size <= MAX_TEXT else {'analysis': 'LARGE_FILE_HASH_ONLY'})
+            if analysis_body is not None:
+                record.update(inspect_text(path, analysis_body))
+            else:
+                record.update({'analysis': 'LARGE_FILE_HASH_ONLY'})
     for path, entry in expected.items():
         if entry['type'] == 'commit':
             records[path]['analysis'] = 'SUBMODULE_NOT_INITIALIZED'
@@ -341,7 +394,7 @@ def audit_repo(repo: dict, output: Path, token: str | None, retain: bool, archiv
         with tempfile.TemporaryDirectory() as temp:
             archive = Path(temp) / 'source.tar.gz'
             result['archive_bytes'] = archive_to_file(f'https://codeload.github.com/{full}/tar.gz/{revision}', archive, archive_cap)
-            records, errors = scan_archive(archive, entries)
+            records, errors = scan_archive(archive, entries, lambda blob_sha: git_blob_bytes(full, blob_sha, token))
             if retain and name in RETAIN:
                 dest = output / 'review-archives'
                 dest.mkdir(exist_ok=True)
@@ -350,6 +403,7 @@ def audit_repo(repo: dict, output: Path, token: str | None, retain: bool, archiv
         files.mkdir(exist_ok=True)
         (files / f'{name}.json').write_text(json.dumps(records, sort_keys=True), encoding='utf-8')
         result.update(errors=errors, status='COMPLETE_AT_REVISION' if not errors else 'INCOMPLETE', verified_blobs=sum(r['content_verified'] for r in records), analyzed_text=sum(r['analysis'] == 'STATIC_TEXT' for r in records), categories=dict(Counter(r['category'] for r in records)), bytes_read=sum(r.get('bytes_read', 0) for r in records), coverage_classes=dict(Counter(r['analysis'] for r in records)))
+        result['archive_export_transform_fallbacks'] = sum(bool(r.get('archive_export_transformed')) for r in records)
         result['python_parse_candidates'] = [{'path': r['path'], 'line': r.get('parse_line')} for r in records if r.get('python_parse') == 'REVIEW_REQUIRED_NOT_RUNTIME_PROOF']
         result['unpinned_action_references'] = sum(len(r.get('action_refs_not_commit_pinned', [])) for r in records)
         result['technologies_by_category'] = {kind: dict(Counter(t for r in records if r['category'] == kind for t in r.get('technology_mentions', []))) for kind in ('source', 'test', 'workflow', 'build', 'documentation')}
@@ -383,6 +437,7 @@ def main() -> int:
     report: dict[str, Any] = {'schema': 'szl.source-census/v1', 'started_at': utc(), 'organization': args.org, 'scope': 'PUBLIC_DEFAULT_BRANCH_SNAPSHOTS_INCLUDING_ARCHIVED', 'manual_file_review': False, 'runtime_certification': False, 'private_repository_coverage': 'NOT_COLLECTED', 'repositories': [], 'auditor_python': sys.version.split()[0], 'collector_source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'archive_cap_bytes': args.archive_mib * 1024 * 1024}
     try:
         repos = inventory(args.org, token)
+        initial_inventory = inventory_identity(repos)
         if not repos or len(repos) > args.max_repos:
             raise CensusError('repository count is outside explicit budget')
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -392,12 +447,12 @@ def main() -> int:
                 report['repositories'].append(row)
                 print(json.dumps({k: row[k] for k in ('repository', 'revision', 'status', 'tracked_blobs', 'verified_blobs', 'error_type') if k in row}), flush=True)
         report['repositories'].sort(key=lambda r: r['repository'].lower())
-        report['inventory_unchanged_at_end'] = [r['id'] for r in repos] == [r['id'] for r in inventory(args.org, token)]
+        report['inventory_unchanged_at_end'] = initial_inventory == inventory_identity(inventory(args.org, token))
         report['complete'] = report['inventory_unchanged_at_end'] and all(r['status'] == 'COMPLETE_AT_REVISION' for r in report['repositories'])
     except Exception as exc:
         report.update(complete=False, fatal_type=type(exc).__name__)
     report['finished_at'] = utc()
-    report['totals'] = {key: sum(r.get(key, 0) for r in report['repositories']) for key in ('tracked_blobs', 'verified_blobs', 'analyzed_text', 'bytes_read', 'unpinned_action_references')}
+    report['totals'] = {key: sum(r.get(key, 0) for r in report['repositories']) for key in ('tracked_blobs', 'verified_blobs', 'analyzed_text', 'bytes_read', 'unpinned_action_references', 'archive_export_transform_fallbacks')}
     report['repository_count'] = len(report['repositories'])
     (args.output / 'census.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     lines = ['# SZL exact-revision public source census', '', 'Automated static coverage; not manual review, a vulnerability verdict, a benchmark, or production acceptance.', '', f"Complete coverage: {report['complete']}. Repositories observed: {report['repository_count']}.", '', '| Repository | State | Verified / tracked blobs | Source files | Tests | Workflows |', '|---|---|---:|---:|---:|---:|']
