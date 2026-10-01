@@ -1,6 +1,6 @@
 # szl-ci-witness
 
-[![PyPI](https://img.shields.io/pypi/v/szl-ci-witness)](https://pypi.org/project/szl-ci-witness/) [![Python](https://img.shields.io/pypi/pyversions/szl-ci-witness)](https://pypi.org/project/szl-ci-witness/)
+[![PyPI](https://img.shields.io/pypi/v/szl-ci-witness)](https://pypi.org/project/szl-ci-witness/) [![Python](https://img.shields.io/pypi/pyversions/szl-ci-witness)](https://pypi.org/project/szl-ci-witness/) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/szl-holdings/szl-ci-witness/badge)](https://scorecard.dev/viewer/?uri=github.com/szl-holdings/szl-ci-witness)
 
 CI as witness. Each witnessed non-PR workflow run appends one hash-chained receipt to
 `ci-witness.jsonl`: repo, commit, run id, conclusion, test counts, python
