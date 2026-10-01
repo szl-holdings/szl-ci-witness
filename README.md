@@ -1,5 +1,7 @@
 # szl-ci-witness
 
+[![PyPI](https://img.shields.io/pypi/v/szl-ci-witness)](https://pypi.org/project/szl-ci-witness/) [![Python](https://img.shields.io/pypi/pyversions/szl-ci-witness)](https://pypi.org/project/szl-ci-witness/)
+
 CI as witness. Each witnessed non-PR workflow run appends one hash-chained receipt to
 `ci-witness.jsonl`: repo, commit, run id, conclusion, test counts, python
 version, timestamp — chained to the previous run. Anyone can recompute the
