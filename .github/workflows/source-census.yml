@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -67,7 +67,7 @@ jobs:
         run: python -S tools/source_census.py --org szl-holdings --output audit-out --workers 3 --max-repos 200 --archive-mib 384 --with-ci --retain-review-archives
       - name: Retain observed coverage including explicit failures
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: source-census-${{ github.run_id }}-${{ github.run_attempt }}
           path: audit-out/
