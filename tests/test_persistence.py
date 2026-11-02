@@ -75,8 +75,9 @@ def test_missing_junit_cannot_claim_success_but_failure_is_recorded(tmp_path):
     assert verify_witness_chain(records)[0]
 
 
-def test_restore_then_append_preserves_prior_bytes(tmp_path):
-    original = (json.dumps(receipt(), sort_keys=True) + "\n").encode()
+@pytest.mark.parametrize("ending", ["", "\n", "\r\n", "\r", " \t", "\n \t"])
+def test_restore_then_append_preserves_prior_bytes(tmp_path, ending):
+    original = (json.dumps(receipt(), sort_keys=True) + ending).encode()
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as z:
         z.writestr("ci-witness.jsonl", original)

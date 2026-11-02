@@ -63,8 +63,15 @@ def append_record(path: str, rec: Dict[str, Any]) -> None:
     ok, detail = verify_witness_chain(records + [rec])
     if not ok:
         raise ValueError(detail)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, sort_keys=True) + "\n")
+    encoded = (json.dumps(rec, sort_keys=True) + "\n").encode("utf-8")
+    with open(path, "a+b") as f:
+        # A restored JSONL chain may omit its final separator. Append it without
+        # rewriting any of the verified predecessor bytes.
+        if f.tell():
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) not in (b"\n", b"\r"):
+                encoded = b"\n" + encoded
+        f.write(encoded)
         f.flush()
         os.fsync(f.fileno())
 
