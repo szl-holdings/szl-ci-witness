@@ -124,7 +124,11 @@ def junit_counts(path: str) -> Dict[str, Any]:
         raise ValueError("JUnit report contains no test cases")
     failed = sum(c.find("failure") is not None or c.find("error") is not None for c in cases)
     skipped = sum(c.find("skipped") is not None for c in cases)
-    return {"state": "MEASURED", "passed": len(cases) - failed - skipped,
+    # A skipped testcase can also contain a teardown error. Preserve both
+    # reported outcomes, but do not subtract that testcase from passes twice.
+    passed = sum(all(c.find(tag) is None for tag in ("failure", "error", "skipped"))
+                 for c in cases)
+    return {"state": "MEASURED", "passed": passed,
             "failed": failed, "skipped": skipped}
 
 def main(argv=None) -> int:
