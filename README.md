@@ -102,3 +102,5 @@ trigger or source revision was witnessed. See the official
 ## License
 
 Apache-2.0 — canonical org text (see LICENSE pointer).
+
+Estate on Hugging Face: models, datasets and Spaces are published under the [SZLHOLDINGS](https://huggingface.co/SZLHOLDINGS) org.
