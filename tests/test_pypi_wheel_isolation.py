@@ -36,7 +36,7 @@ gate = load("pypi_wheel_isolation_gate", GATE)
 
 
 class InstalledWheelIsolationTests(TestCase):
-    def run_gate(self, root, *, wheel_broken, checkout_broken):
+    def run_gate(self, root, *, wheel_broken, checkout_broken, missing_dependency=False):
         """Stub build/network steps; execute the actual venv metadata/import probes."""
         checkout = root / "checkout"
         checkout.mkdir()
@@ -67,14 +67,18 @@ class InstalledWheelIsolationTests(TestCase):
                     archive.writestr(
                         "shadow_probe-1.2.3.dist-info/METADATA",
                         "Metadata-Version: 2.1\nName: shadow-probe\nVersion: 1.2.3\n"
-                        "Project-URL: Source, https://github.com/szl-holdings/shadow-repo\n\n",
+                        "Project-URL: Source, https://github.com/szl-holdings/shadow-repo\n"
+                        + ("Requires-Dist: szl-wheel-isolation-missing-dependency==0.0.0\n"
+                           if missing_dependency else "") + "\n",
                     )
                 (stage / "shadow_probe-1.2.3.tar.gz").write_bytes(b"synthetic sdist; not built or published")
                 return
             if command[1:3] == ["-m", "twine"]:
                 return
             if command[1:3] == ["-m", "venv"]:
-                venv.EnvBuilder(with_pip=False).create(command[-1])
+                # ensurepip uses Python's bundled wheel, with no network lookup.
+                # Execute the real pip check below; do not stub a successful result.
+                venv.EnvBuilder(with_pip=True).create(command[-1])
                 return
             if "pip" in command and "install" in command:
                 # No installer or network: lay out only our own two fixture files.
@@ -109,8 +113,20 @@ class InstalledWheelIsolationTests(TestCase):
             self.assertEqual(receipt["package"], "shadow-probe")
             self.assertEqual(receipt["version"], "1.2.3")
             venv_commands = [command for command in commands if "venv-shadow-probe" in command[0]]
-            self.assertEqual(len(venv_commands), 3)
+            self.assertEqual(len(venv_commands), 4)
             self.assertTrue(all(command[1] == "-I" for command in venv_commands))
+            self.assertEqual(venv_commands[1][1:], ["-I", "-m", "pip", "check"])
+            self.assertEqual(venv_commands[2][1:3], ["-I", "-c"])
+            self.assertEqual(venv_commands[3][1:3], ["-I", "-c"])
+
+    def test_missing_wheel_dependency_fails_the_real_pip_check(self):
+        with tempfile.TemporaryDirectory(prefix="szl-pypi-isolation-") as directory:
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                self.run_gate(Path(directory), wheel_broken=False, checkout_broken=False,
+                              missing_dependency=True)
+            self.assertEqual(failure.exception.cmd[1:], ["-I", "-m", "pip", "check"])
+            self.assertIn("szl-wheel-isolation-missing-dependency", failure.exception.stdout)
+            self.assertNotIn("SYNTHETIC_BROKEN_MODULE", failure.exception.stderr)
 
 
 
