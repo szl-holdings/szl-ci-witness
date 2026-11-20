@@ -55,6 +55,23 @@ workflow job succeeded. Never substitute guessed counts or a dashboard
 color for the JUnit report. The legacy `record` command accepts caller
 counts; `record-junit` is the measured CI path.
 
+### Artifact redirect security
+
+GitHub Actions artifact downloads can redirect from the GitHub API to an
+external HTTPS object-storage host. The witness fetcher **requires HTTPS** on
+each redirect, refuses user-info URLs and nonstandard/invalid ports, and drops
+its GitHub Authorization header when the destination origin changes.
+A same-host HTTPS-to-HTTP redirect is denied rather than followed with or
+without a token. Synthetic negative fixtures verify these invariants without
+contacting a provider or handling real secrets. Redirect safety does not make
+an artifact genuine: the original run identity, attempt, archive member and
+terminal hash-chain checks still apply. Receipts remain **UNSIGNED_HONEST**.
+
+This policy follows Python's urllib redirect semantics and the OWASP
+recommendation to validate redirect schemes and origins. It does not grant
+permission to broaden network egress or treat the CI witness as a release
+signer.
+
 `record` reads `GITHUB_REPOSITORY`, `GITHUB_SHA`, `GITHUB_RUN_ID` from the
 Actions environment by default. The chain file commits or uploads as an
 artifact — either way it is verifiable:
