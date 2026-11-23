@@ -36,8 +36,21 @@ def select_predecessor(artifacts: list[dict], prefix: str, run_id: str, attempt:
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Artifact ZIP downloads may redirect to an external HTTPS blob host.
+        # Deny insecure origins entirely: hostname-only comparisons could
+        # preserve an API bearer token after HTTPS -> HTTP on the same host.
+        target = urllib.parse.urlsplit(newurl)
+        if (target.scheme != "https" or not target.hostname
+                or target.username is not None or target.password is not None
+                or target.port not in (None, 443)):
+            raise ValueError("unsafe artifact redirect target")
+        source = urllib.parse.urlsplit(req.full_url)
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+        if redirected and (target.hostname != source.hostname
+                           or (target.port or 443) != (source.port or 443)
+                           or target.scheme != source.scheme):
+            # Cross-origin HTTPS artifact downloads remain possible, but
+            # credentials never follow the redirect outside the API origin.
             redirected.remove_header("Authorization")
         return redirected
 
